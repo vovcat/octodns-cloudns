@@ -8,7 +8,7 @@ from octodns.provider import ProviderException
 from octodns.provider.base import BaseProvider
 from octodns.record import Record
 
-__version__ = __VERSION__ = '0.0.4'
+__version__ = __VERSION__ = '0.0.4+vc'
 
 class ClouDNSClientException(ProviderException):
     pass

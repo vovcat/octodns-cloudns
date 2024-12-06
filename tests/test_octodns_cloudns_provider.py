@@ -28,7 +28,7 @@ class TestClouDNSClient(unittest.TestCase):
 class TestClouDNSProvider(unittest.TestCase):
     def setUp(self):
         self.provider = ClouDNSProvider('test', '456', '123456')
-    
+
     # Invalid authentication
     @patch('octodns.provider.cloudns.ClouDNSClient')
     def test_invalid_authentication(self, mock_clouDNSClient):
@@ -63,12 +63,12 @@ class TestClouDNSProvider(unittest.TestCase):
 
         mock_zone_create.assert_called_once_with('example552525.com', 'master')
         self.assertEqual(response['status'], 'Success')
-        
+
     @patch.object(ClouDNSClient, '_request')
     def test_zone_create_failure(self, mock_request):
         mock_request.return_value = {'status': 'Failed'}
         response = self.provider.zone_create('example.cosdm', 'master')
-        
+
         self.assertEqual(response['status'], 'Failed')
 
     # Test records
@@ -85,11 +85,11 @@ class TestClouDNSProvider(unittest.TestCase):
         expected_argument = zone
         actual_argument = mock_populate.call_args[0][0]
         self.assertEqual(actual_argument, expected_argument)
-    
+
     def test_record_creation(self):
         zone_name = 'example.com.'
         zone = Zone(zone_name, [])
-        
+
         a_record_data = {
             'type': 'A',
             'ttl': 3600,
@@ -109,7 +109,7 @@ class TestClouDNSProvider(unittest.TestCase):
         self.assertEqual(cname_record.ttl, 3600)
         self.assertEqual(cname_record.name, 'sub')
         self.assertEqual(cname_record.data['value'], 'example.com.')
-        
+
         mx_record_data = {
             'type': 'MX',
             'ttl': 3600,
@@ -119,7 +119,7 @@ class TestClouDNSProvider(unittest.TestCase):
         self.assertEqual(mx_record.ttl, 3600)
         self.assertEqual(mx_record.name, '')
         self.assertEqual(str(mx_record.data['value']), "'10 mailforwadrd.cloudns.net.'")
-        
+
         txt_record_data = {
             'type': 'TXT',
             'ttl': 3600,
@@ -129,7 +129,7 @@ class TestClouDNSProvider(unittest.TestCase):
         self.assertEqual(txt_record.ttl, 3600)
         self.assertEqual(txt_record.name, '')
         self.assertEqual(txt_record.data['value'], "v=spf1 -a -mx -ip:192.168.0.1")
-        
+
         srv_record_data = {
             'type': 'SRV',
             'ttl': 3600,
@@ -139,7 +139,7 @@ class TestClouDNSProvider(unittest.TestCase):
         self.assertEqual(srv_record.ttl, 3600)
         self.assertEqual(srv_record.name, '_sip._tcp')
         self.assertEqual(str(srv_record.data['value']), "'10 50 443 bigbox.example.com.'")
-        
+
         loc_record_data = {
             'type': 'LOC',
             'ttl': 3600,
@@ -151,7 +151,7 @@ class TestClouDNSProvider(unittest.TestCase):
         self.assertEqual(loc_record.ttl, 3600)
         self.assertEqual(loc_record.name, '')
         self.assertEqual(str(loc_record.data['value']), "'10 11 12.000 S 13 14 15.000 W 16.00m 17.00m 20.00m 21.00m'")
-        
+
         sshfp_record_data = {
             'type': 'SSHFP',
             'ttl': 3600,
@@ -161,7 +161,7 @@ class TestClouDNSProvider(unittest.TestCase):
         self.assertEqual(sshfp_record.ttl, 3600)
         self.assertEqual(sshfp_record.name, '')
         self.assertEqual(str(sshfp_record.data['value']), "'1 1 123456789abcdef67890123456789abcdef67890'")
-        
+
         naptr_record_data = {
             'type': 'NAPTR',
             'ttl': 3600,
@@ -172,7 +172,7 @@ class TestClouDNSProvider(unittest.TestCase):
         self.assertEqual(naptr_record.ttl, 3600)
         self.assertEqual(naptr_record.name, '')
         self.assertEqual(str(naptr_record.data['value']), "'10 100 \"S\" \"SIP D2U\" \"$!sip:info@bar.example.com!\" '")
-        
+
         tlsa_record_data = {
             'type': 'TLSA',
             'ttl': 3600,
@@ -182,7 +182,7 @@ class TestClouDNSProvider(unittest.TestCase):
         tlsa_record = Record.new(zone, '_443._tcp', tlsa_record_data)
         self.assertEqual(tlsa_record.ttl, 3600)
         self.assertEqual(tlsa_record.name, '_443._tcp')
-        
+
         geo_a_record_data = {
             'type': 'A',
             'ttl': 3600,

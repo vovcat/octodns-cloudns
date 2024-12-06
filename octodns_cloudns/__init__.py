@@ -1,12 +1,12 @@
+import json
 from collections import defaultdict
 from logging import getLogger
 from requests import Session
+
+import octodns, octodns.zone
 from octodns.provider import ProviderException
-import logging
 from octodns.provider.base import BaseProvider
 from octodns.record import Record
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
 
 __version__ = __VERSION__ = '0.0.4'
 
@@ -37,7 +37,7 @@ class ClouDNSClientNotFound(ClouDNSClientException):
 class ClouDNSClientUnknownDomainName(ClouDNSClientException):
     def __init__(self, msg):
         super().__init__(msg)
-        
+
 class ClouDNSClientGeoDNSNotSupported(ClouDNSClientException):
     def __init__(self, msg):
         super().__init__(msg)
@@ -45,41 +45,42 @@ class ClouDNSClientGeoDNSNotSupported(ClouDNSClientException):
 
 class ClouDNSClient(object):
     def __init__(self, auth_id, auth_password, sub_auth=False):
+        self.log = getLogger(f'{self.__class__.__name__}')
+        self.log.debug(f'__init__: auth_id={auth_id}, sub_auth={sub_auth}')
+
         session = Session()
-        session.headers.update(
-            {
-                "Authorization": f"Bearer {auth_id}:{auth_password}",
-                "User-Agent": f"cloudns/{__version__} octodns-cloudns/{__VERSION__}",
-            }
-        )
+        session.headers.update({
+            "Authorization": f"Bearer {auth_id}:{auth_password}",
+            "User-Agent": f"octodns/{octodns.__version__} octodns-cloudns/{__version__}",
+        })
         self._session = session
-        if sub_auth:
-            self._auth_type = 'sub-auth-id'
-        else:
-            self._auth_type = 'auth-id'
-            
+
+        if sub_auth: self._auth_type = 'sub-auth-id'
+        else: self._auth_type = 'auth-id'
+
         self.auth_id = auth_id
         self.auth_password = auth_password
-        
+
         # Currently hard-coded, but could offer XML in the future
         self._type = 'json'
-        
+
         self._urlbase = 'https://api.cloudns.net/{0}.{1}?{4}={2}&auth-password={3}&{0}'.format(
             '{}', self._type, self.auth_id, self.auth_password, self._auth_type)
 
-        
+        self.PAGINATION_LIMIT = 100
+
     def _request(self, function, params=''):
         response = self._raw_request(function, params)
         if self._type == 'json':
             return response.json()
-        
+
     def _raw_request(self, function, params=''):
         url = self._urlbase.format(function, params)
-        logger.debug(f"Request URL: {url}")
+        self.log.debug(f"Request URL: {url}")
         response = self._session.get(url)
-        logger.debug(f"Request Response: {response.text}")
+        self.log.debug(f"Request Response: {response.text}")
         return response
-        
+
     def _handle_response(self, response):
         status_code = response.status_code
         if status_code == 400:
@@ -91,49 +92,59 @@ class ClouDNSClient(object):
         elif status_code == 404:
             raise ClouDNSClientNotFound(response)
         response.raise_for_status()
+
+    def _get_pages_count(self):
+        return self._request('dns/get-pages-count', f'rows-per-page={self.PAGINATION_LIMIT}')
+
+    def _request_with_pagination(self, path, pages_count):
+        result = []
+        for page in range(1, pages_count + 1):
+            result += self._request(path, f'page={page}&rows-per-page={self.PAGINATION_LIMIT}')
+        return result
+
     def checkDot(self, domain_name):
         if domain_name.endswith('.'):
             domain_name = domain_name[:-1]
         return domain_name
-    
+
     def zone_create(self, domain_name, zone_type, master_ip=''):
         params = 'domain-name={}&zone-type={}&master-ip={}'.format(domain_name, zone_type, master_ip)
         return self._request('dns/register', params)
-    
+
     def zone(self, domain_name):
         params = 'domain-name={}'.format(domain_name)
         return self._request('dns/get-zone-info', params)
-    
+
     def zone_records(self, domain_name):
         params = 'domain-name={}'.format(domain_name)
         return self._request('dns/records', params)
 
     def record_create(self, domain_name, rrset_type, rrset_name, rrset_values, rrset_ttl=3600, geodns=False, rrset_locations = None, status=1):
-        if (rrset_name == '@'):
+        if rrset_name == '@':
             rrset_name = ''
-            
+
         params = 'domain-name={}&record-type={}&host={}&ttl={}&status={}'.format(
             domain_name, rrset_type, rrset_name, rrset_ttl, status)
 
         single_types = ['CNAME', 'A', 'AAAA', 'DNAME', 'ALIAS', 'NS', 'PTR', 'SPF', 'TXT']
         if rrset_type in single_types:
             params += '&record={}'.format(rrset_values[0].replace('\;', ';').replace('+', '%2B'))
-            
-        if(geodns is True):
+
+        if geodns is True:
             for location in rrset_locations:
                 params += '&geodns-code={}'.format(location)
                 self._request('dns/add-record', params)
             return
-        
+
         if rrset_type == 'MX':
             values = rrset_values[0]
-            
+
             priority = values.preference
             record = values.exchange
-            
+
             record = self.checkDot(record)
             params += '&priority={}&record={}'.format(priority,record)
-            
+
         if rrset_type == 'SSHFP':
             sshfp_value = rrset_values[0]
             algorithm = sshfp_value.algorithm
@@ -144,23 +155,23 @@ class ClouDNSClient(object):
 
         if rrset_type == 'SRV':
             values = rrset_values[0]
-            
+
             srv_value = rrset_values[0]
             priority = srv_value.priority
             weight = srv_value.weight
             port = srv_value.port
             record = srv_value.target
-            
+
             params += '&priority={}&weight={}&port={}&record={}'.format(priority, weight, port,record)
-            
-        if rrset_type == 'CAA':            
+
+        if rrset_type == 'CAA':
             caa_value = rrset_values[0]
 
             flag = caa_value.flags
             caa_type = caa_value.tag
             caa_value = caa_value.value
             params += '&caa_flag={}&caa_type={}&caa_value={}'.format(flag, caa_type, caa_value)
-            
+
         if rrset_type == 'LOC':
             values = rrset_values[0]
 
@@ -177,13 +188,13 @@ class ClouDNSClient(object):
             size = loc_value.size
             h_precision = loc_value.precision_horz
             v_precision = loc_value.precision_vert
-            
+
             params += '&lat-deg={}&lat-min={}&lat-sec={}&lat-dir={}&long-deg={}&long-min={}&long-sec={}&long-dir={}&altitude={}&size={}&h-precision={}&v-precision={}'.format(
                 lat_deg, lat_min, lat_sec, lat_dir, long_deg, long_min, long_sec, long_dir, altitude, size, h_precision, v_precision)
-            
+
         if rrset_type == 'NAPTR':
             values = rrset_values[0]
-            
+
             naptr_value = rrset_values[0]
             order = naptr_value.order
             pref = naptr_value.preference
@@ -194,59 +205,62 @@ class ClouDNSClient(object):
             if hasattr(naptr_value, 'replacement'):
                 replace = naptr_value.replacement
                 params += '&replace={}'.format(replace)
-                
+
             if hasattr(naptr_value, 'regexp'):
                 regexp = naptr_value.regexp
                 params += '&regexp={}'.format(regexp)
-                
+
         if rrset_type == 'TLSA':
             tlsa_values = rrset_values[0]
-            
+
             record = tlsa_values.certificate_association_data
             tlsa_usage = tlsa_values.certificate_usage
             tlsa_selector = tlsa_values.selector
             tlsa_matching_type = tlsa_values.matching_type
 
             params += '&record={}&tlsa_usage={}&tlsa_selector={}&tlsa_matching_type={}'.format(record, tlsa_usage, tlsa_selector, tlsa_matching_type)
-            
+
         return self._request('dns/add-record', params)
-    
+
     def record_delete(self, domain_name, record_id):
         params = 'domain-name={}&record-id={}'.format(domain_name, record_id)
         return self._request('dns/delete-record', params)
+
+
+def require_root_domain(fqdn):
+    if fqdn.endswith('.'): return fqdn
+    return f'{fqdn}.'
 
 
 class ClouDNSProvider(BaseProvider):
     SUPPORTS_GEO = True
     SUPPORTS_DYNAMIC = False
     SUPPORTS_ROOT_NS = True
-    SUPPORTS = set(
-        [
-            "A",
-            "AAAA",
-            "ALIAS",
-            "CAA",
-            "CNAME",
-            "DNAME",
-            "MX",
-            "NS",
-            "PTR",
-            "SPF",
-            "SRV",
-            "SSHFP",
-            "TXT",
-            "TLSA",
-            "LOC",
-            "NAPTR",
-        ]
-    )
+    SUPPORTS = set([
+        "A",
+        "AAAA",
+        "ALIAS",
+        "CAA",
+        "CNAME",
+        "DNAME",
+        "MX",
+        "NS",
+        "PTR",
+        "SPF",
+        "SRV",
+        "SSHFP",
+        "TXT",
+        "TLSA",
+        "LOC",
+        "NAPTR",
+        "WR",
+    ])
 
     def __init__(self, id, auth_id, auth_password, *args, **kwargs):
-        self.log = getLogger(f"ClouDNSProvider[{id}]")
-        self.log.debug("__init__: id=%s, auth_id=***", id)
+        self.log = getLogger(f'{self.__class__.__name__}[{id}]')
+        self.log.debug(f'__init__: id={id}, auth_id={auth_id}')
         super().__init__(id, *args, **kwargs)
         self._client = ClouDNSClient(auth_id, auth_password)
-
         self._zone_records = {}
 
     def _data_for_multiple(self, _type, records):
@@ -255,7 +269,7 @@ class ClouDNSProvider(BaseProvider):
             "type": _type,
             "values": [v["record"] + "." if v["type"] not in ["A", "AAAA", "TXT", "SPF"] else v["record"] for v in records],
         }
-        
+
     def _data_for_TXT(self, _type, records):
         return {
             "ttl": records[0]["ttl"],
@@ -266,12 +280,39 @@ class ClouDNSProvider(BaseProvider):
             ]
         }
 
+    def _data_for_WR(self, _type, records):
+        v = { k: records[0].get(k, '') for k in ["frame", "frame_description",
+            "frame_keywords", "frame_title", "mobile_meta", "savepath", "wrtype"] }
+        return {
+            "ttl": records[0]["ttl"],
+            "type": _type,
+            "value": records[0]["record"] + ' ' + json.dumps(v)
+        }
 
 
     _data_for_A = _data_for_multiple
     _data_for_AAAA = _data_for_multiple
     _data_for_SPF = _data_for_multiple
     _data_for_NS = _data_for_multiple
+
+    def domain_list(self):
+        domains = {}
+        domains_list = []
+
+        pages_count = self._client._get_pages_count()
+        domains_list = self._client._request_with_pagination('dns/list-zones', pages_count)
+
+        for domain in domains_list:
+            domains[domain['name']] = domain
+        return domains
+
+    def list_zones(self):
+        # This method is called dynamically in octodns.Manager._preprocess_zones()
+        # and required for use of "*" if provider is source.
+        zones_without_dot = self.domain_list()
+        return [
+            require_root_domain(zone_name) for zone_name in zones_without_dot
+        ]
 
     def zone(self, zone_name):
         return self._client.zone(zone_name)
@@ -311,14 +352,12 @@ class ClouDNSProvider(BaseProvider):
                 values.append({"preference": record['priority'], "exchange": record['record'] + '.'})
         return {"ttl": records[0]["ttl"], "type": _type, "values": values}
 
-
-
     def _data_for_SRV(self, _type, records):
         values = []
         for record in records:
             values.append({"priority": record['priority'], "weight": record['weight'] ,"port": record['port'], "target": record['record'] + '.'})
         return {"ttl": record["ttl"], "type": _type, "values": values}
-    
+
     def _data_for_LOC(self, _type, records):
         values = []
         for record in records:
@@ -332,14 +371,14 @@ class ClouDNSProvider(BaseProvider):
         for record in records:
             values.append({"algorithm": record['algorithm'], "fingerprint_type": record['fp_type'] ,"fingerprint": record['record']})
         return {"ttl": records[0]["ttl"], "type": _type, "values": values}
-    
+
     def _data_for_NAPTR(self, _type, records):
         values = []
         for record in records:
             values.append({"order": record['order'], "preference": record['pref'], "flags": record['flag'], "service": record['params'],
                             "regexp": record['regexp'], "replacement": record['replace']})
         return {"ttl": records[0]["ttl"], "type": _type, "values": values}
-    
+
     def _data_for_TLSA(self, _type, records):
         values = []
         for record in records:
@@ -354,7 +393,7 @@ class ClouDNSProvider(BaseProvider):
             except ClouDNSClientNotFound:
                 return []
         return self._zone_records[zone.name]
-    
+
     def isGeoDNS(self, statusDescription):
         if statusDescription == 'Your plan supports only GeoDNS zones.':
             return True
@@ -371,7 +410,7 @@ class ClouDNSProvider(BaseProvider):
 
         values = defaultdict(lambda: defaultdict(list))
         records_data = self.zone_records(zone)
-        
+
         if 'status' in records_data and records_data['status'] == 'Failed':
             self.log.info("populate: no existing zone, trying to create it")
             response = self._client.zone_create(zone.name[:-1], 'master')
@@ -381,36 +420,39 @@ class ClouDNSProvider(BaseProvider):
                 )
                 e.__cause__ = None
                 raise e
-            
-            if (self.isGeoDNS(response['statusDescription'])):
+
+            if self.isGeoDNS(response['statusDescription']):
                 response = self._client.zone_create(zone.name[:-1], 'geodns')
-            
-            if(response['status'] == 'Failed'):
+
+            if response['status'] == 'Failed':
                 e = ClouDNSClientUnknownDomainName(f"{response['status']} : {response['statusDescription']}")
                 e.__cause__ = None
                 raise e
             self.log.info("populate: zone has been successfully created")
             records_data = self._client.zone_records(zone.name[:-1])
-            
+
         for record_id, record in records_data.items():
             _type = record["type"]
-            
             if _type not in self.SUPPORTS:
+                self.log.warning("populate: unsupported %s", record)
                 continue
-
             values[record["host"]][_type].append(record)
+
         before = len(records_data.items())
         for name, types in values.items():
             for _type, records in types.items():
                 data_for = getattr(self, f"_data_for_{_type}")
+                data = data_for(_type, records)
+                if name == '@': name = ''
                 record = Record.new(
-                    zone,
-                    name,
-                    data_for(_type, records),
-                    source=self,
-                    lenient=lenient,
+                    zone, name, data, source=self, lenient=lenient
                 )
-                zone.add_record(record, lenient=lenient)
+                try:
+                    zone.add_record(record, lenient=lenient)
+                except octodns.zone.DuplicateRecordException as e:
+                    self.log.info(f'octodns.zone.DuplicateRecordException: {e}')
+                    self.log.info(f'octodns.zone.DuplicateRecordException: {record}')
+
         exists = zone.name in self._zone_records
         print(
             "populate:   found %s records, exists=%s",
@@ -430,7 +472,7 @@ class ClouDNSProvider(BaseProvider):
             "rrset_type": record._type,
             "rrset_values": [str(v) for v in record.values]
         }
-        
+
     def _params_for_geo(self, record):
         geo_location = record.geo
         locations = []
@@ -438,7 +480,7 @@ class ClouDNSProvider(BaseProvider):
             continent_code = geo_value.continent_code
             country_code = geo_value.country_code
             subdivision_code = geo_value.subdivision_code
-            
+
             if subdivision_code is not None:
                 locations.append(subdivision_code)
             elif country_code is not None:
@@ -447,8 +489,8 @@ class ClouDNSProvider(BaseProvider):
                 locations.append(continent_code)
             else:
                 locations = 0
-                
-        return{
+
+        return {
             "geodns": True,
             "rrset_name": self._record_name(record.name),
             "rrset_ttl": record.ttl,
@@ -457,7 +499,7 @@ class ClouDNSProvider(BaseProvider):
             "rrset_locations": [str(v) for v in locations]
         }
 
-        
+
     def _params_for_A_AAAA(self, record):
         if getattr(record, 'geo', False):
             return self._params_for_geo(record)
@@ -523,7 +565,7 @@ class ClouDNSProvider(BaseProvider):
                 for v in record.values
             ],
         }
-        
+
     def _params_for_LOC(self, record):
         return {
             "rrset_name": self._record_name(record.name),
@@ -535,7 +577,7 @@ class ClouDNSProvider(BaseProvider):
                 for v in record.values
             ],
         }
-        
+
     def _params_for_NAPTR(self, record):
         return {
             "rrset_name": self._record_name(record.name),
@@ -546,7 +588,7 @@ class ClouDNSProvider(BaseProvider):
                 for v in record.values
             ],
         }
-        
+
     def _params_for_TLSA(self, record):
         return {
             "rrset_name": self._record_name(record.name),
@@ -559,7 +601,7 @@ class ClouDNSProvider(BaseProvider):
         }
 
     def _apply_create(self, change):
-        new = change.new      
+        new = change.new
         if hasattr(new, 'values'):
             for value in new.values:
                 data = getattr(self, f"_params_for_{new._type}")(new)
@@ -575,7 +617,7 @@ class ClouDNSProvider(BaseProvider):
     def _apply_update(self, change):
         self._apply_delete(change)
         self._apply_create(change)
-        
+
     def records_are_same(self, existing):
         zone = existing.zone
         record_ids = []
@@ -625,7 +667,6 @@ class ClouDNSProvider(BaseProvider):
                             and value.exchange == record['record']
                         ):
                             record_ids.append(record_id)
-                        
                 elif existing._type == 'LOC' and record['type'] == 'LOC':
                     for value in existing.values:
                         if (
@@ -670,14 +711,14 @@ class ClouDNSProvider(BaseProvider):
         existing = change.existing
         zone = existing.zone
         record_ids = self.records_are_same(existing)
-        
+
         for record_id in record_ids:
             self._client.record_delete(zone.name[:-1], record_id)
 
 
     def _apply(self, plan):
         desired = plan.desired
-        
+
         changes = plan.changes
         zone = desired.name[:-1]
         self.log.debug("_apply: zone=%s, len(changes)=%d", desired.name, len(changes))
